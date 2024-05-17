@@ -23,24 +23,31 @@ router = Router()
 class RegistrationStates(StatesGroup):
     waiting_for_full_name = State()
     waiting_for_phone_number = State()
-
-class DoctorRegistrationStates(StatesGroup):
-    waiting_for_full_name = State()
-    waiting_for_phone_number = State()
-    waiting_for_specialization = State()
+    waiting_for_specialization = State()  # Для врачей
 
 class DialogueStates(StatesGroup):
     waiting_for_user_message = State()
     waiting_for_doctor_response = State()
 
-@router.message(Command(commands='start'))
+@router.message(Command('start'))
 async def send_welcome(message: types.Message):
-    await message.answer("Добро пожаловать! Чтобы зарегистрироваться, введите /register.")
+    buttons = [
+        [InlineKeyboardButton(text="Регистрация пациента", callback_data="register_patient")],
+        [InlineKeyboardButton(text="Регистрация врача", callback_data="register_doctor")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("Добро пожаловать! Пожалуйста, выберите действие:", reply_markup=markup)
 
-@router.message(Command(commands='register'))
-async def register_user(message: types.Message, state: FSMContext):
-    await message.answer("Введите ваше ФИО:")
+@router.callback_query(lambda c: c.data == 'register_patient')
+async def register_patient(query: types.CallbackQuery, state: FSMContext):
     await state.set_state(RegistrationStates.waiting_for_full_name)
+    await query.message.answer("Введите ваше ФИО:")
+
+@router.callback_query(lambda c: c.data == 'register_doctor')
+async def register_doctor(query: types.CallbackQuery, state: FSMContext):
+    await state.set_state(RegistrationStates.waiting_for_full_name)
+    await state.update_data(is_doctor=True)
+    await query.message.answer("Введите ФИО врача:")
 
 @router.message(RegistrationStates.waiting_for_full_name)
 async def process_full_name(message: types.Message, state: FSMContext):
@@ -50,72 +57,84 @@ async def process_full_name(message: types.Message, state: FSMContext):
 
 @router.message(RegistrationStates.waiting_for_phone_number)
 async def process_phone_number(message: types.Message, state: FSMContext):
+    await state.update_data(phone_number=message.text)
+    data = await state.get_data()
+    if data.get("is_doctor"):
+        await message.answer("Введите вашу специализацию:")
+        await state.set_state(RegistrationStates.waiting_for_specialization)
+    else:
+        await complete_registration(message, state)
+
+@router.message(RegistrationStates.waiting_for_specialization)
+async def process_specialization(message: types.Message, state: FSMContext):
+    await state.update_data(specialization=message.text)
+    await complete_registration(message, state)
+
+async def complete_registration(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     full_name = user_data['full_name']
-    phone_number = message.text
+    phone_number = user_data['phone_number']
     telegram_id = message.from_user.id
+    is_doctor = user_data.get('is_doctor', False)
+    
     async with aiosqlite.connect('clinic.db') as conn:
-        cursor = await conn.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
-        existing_user = await cursor.fetchone()
-        if existing_user:
-            await message.answer("Вы уже зарегистрированы!")
+        if is_doctor:
+            specialization = user_data['specialization']
+            cursor = await conn.execute('SELECT * FROM doctors WHERE telegram_id = ?', (telegram_id,))
+            existing_doctor = await cursor.fetchone()
+            if existing_doctor:
+                await message.answer("Этот врач уже зарегистрирован!")
+            else:
+                await conn.execute('''
+                INSERT INTO doctors (telegram_id, full_name, phone_number, specialization)
+                VALUES (?, ?, ?, ?)
+                ''', (telegram_id, full_name, phone_number, specialization))
+                await conn.commit()
+                await message.answer("Регистрация врача завершена!")
         else:
-            await conn.execute('''
-            INSERT INTO users (telegram_id, full_name, phone_number, subscription)
-            VALUES (?, ?, ?, TRUE)
-            ''', (telegram_id, full_name, phone_number))
-            await conn.commit()
-            await message.answer("Регистрация завершена!")
+            cursor = await conn.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
+            existing_user = await cursor.fetchone()
+            if existing_user:
+                await message.answer("Вы уже зарегистрированы!")
+            else:
+                await conn.execute('''
+                INSERT INTO users (telegram_id, full_name, phone_number, subscription)
+                VALUES (?, ?, ?, TRUE)
+                ''', (telegram_id, full_name, phone_number))
+                await conn.commit()
+                await message.answer("Регистрация пациента завершена!")
     await state.clear()
+    await show_profile(message, telegram_id, is_doctor)
 
-@router.message(Command(commands='register_doctor'))
-async def register_doctor(message: types.Message, state: FSMContext):
-    await message.answer("Введите ФИО врача:")
-    await state.set_state(DoctorRegistrationStates.waiting_for_full_name)
-
-@router.message(DoctorRegistrationStates.waiting_for_full_name)
-async def process_doctor_full_name(message: types.Message, state: FSMContext):
-    await state.update_data(full_name=message.text)
-    await message.answer("Введите номер телефона врача:")
-    await state.set_state(DoctorRegistrationStates.waiting_for_phone_number)
-
-@router.message(DoctorRegistrationStates.waiting_for_phone_number)
-async def process_doctor_phone_number(message: types.Message, state: FSMContext):
-    await state.update_data(phone_number=message.text)
-    await message.answer("Введите специализацию врача:")
-    await state.set_state(DoctorRegistrationStates.waiting_for_specialization)
-
-@router.message(DoctorRegistrationStates.waiting_for_specialization)
-async def process_doctor_specialization(message: types.Message, state: FSMContext):
-    doctor_data = await state.get_data()
-    full_name = doctor_data['full_name']
-    phone_number = doctor_data['phone_number']
-    specialization = message.text
-    telegram_id = message.from_user.id
+async def show_profile(message: types.Message, telegram_id: int, is_doctor: bool):
     async with aiosqlite.connect('clinic.db') as conn:
-        cursor = await conn.execute('SELECT * FROM doctors WHERE telegram_id = ?', (telegram_id,))
-        existing_doctor = await cursor.fetchone()
-        if existing_doctor:
-            await message.answer("Этот врач уже зарегистрирован!")
+        if is_doctor:
+            cursor = await conn.execute('SELECT full_name, phone_number, specialization FROM doctors WHERE telegram_id = ?', (telegram_id,))
+            doctor = await cursor.fetchone()
+            if doctor:
+                profile_text = f"Ваш профиль:\nФИО: {doctor[0]}\nТелефон: {doctor[1]}\nСпециализация: {doctor[2]}"
         else:
-            await conn.execute('''
-            INSERT INTO doctors (telegram_id, full_name, phone_number, specialization)
-            VALUES (?, ?, ?, ?)
-            ''', (telegram_id, full_name, phone_number, specialization))
-            await conn.commit()
-            await message.answer("Регистрация врача завершена!")
-    await state.clear()
+            cursor = await conn.execute('SELECT full_name, phone_number FROM users WHERE telegram_id = ?', (telegram_id,))
+            user = await cursor.fetchone()
+            if user:
+                profile_text = f"Ваш профиль:\nФИО: {user[0]}\nТелефон: {user[1]}"
+    
+    buttons = []
+    if not is_doctor:
+        buttons.append([InlineKeyboardButton(text="Показать врачей", callback_data="show_doctors")])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer(profile_text, reply_markup=markup)
 
-@router.message(Command(commands='doctors'))
-async def send_doctors_list(message: types.Message):
+@router.callback_query(lambda c: c.data == 'show_doctors')
+async def send_doctors_list(query: types.CallbackQuery):
     async with aiosqlite.connect('clinic.db') as conn:
-        doctors = await conn.execute_fetchall('SELECT full_name, doctor_id FROM doctors')
+        doctors = await conn.execute_fetchall('SELECT specialization, doctor_id FROM doctors')
         if not doctors:
-            await message.answer("На данный момент нет зарегистрированных врачей.")
+            await query.message.answer("На данный момент нет зарегистрированных врачей.")
             return
         buttons = [InlineKeyboardButton(text=doc[0], callback_data=f"doctor_{doc[1]}") for doc in doctors]
         markup = InlineKeyboardMarkup(inline_keyboard=[buttons])
-        await message.answer("Выберите врача из списка:", reply_markup=markup)
+        await query.message.answer("Выберите врача по специализации из списка:", reply_markup=markup)
 
 @router.callback_query(lambda c: c.data.startswith('doctor_'))
 async def handle_doctor_selection(query: types.CallbackQuery, state: FSMContext):
