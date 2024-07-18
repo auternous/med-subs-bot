@@ -1,1 +1,2 @@
 token = "6890166616:AAGo4azOVNnAo1_X4RK8nJ7smJGWhTVy41g"
+admin_ids = [370028521]
