@@ -74,3 +74,17 @@ def add_patient(user_id, doctor_id, referral_code):
     cursor.execute('INSERT INTO patients (user_id, doctor_id, referral_code) VALUES (?, ?, ?)', (user_id, doctor_id, referral_code))
     conn.commit()
     conn.close()
+
+def approve_doctor(doctor_id):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE doctors SET is_approved = 1 WHERE id = ?', (doctor_id,))
+    conn.commit()
+    conn.close()
+
+def add_specialization_to_doctor(doctor_id, specialization):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE doctors SET specialization = ? WHERE id = ?', (specialization, doctor_id))
+    conn.commit()
+    conn.close()
