@@ -1,21 +1,20 @@
 import logging
-from aiogram import Bot, Dispatcher, executor, types
-from config import TOKEN
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from config import bot, dp, storage
 from db import init_db
-from admin import register_admin_handlers
-from doctor import register_doctor_handlers
-from patient import register_patient_handlers
+import doctor
+import admin
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+async def main():
+    await init_db()
+    dp.include_router(doctor.router)
+    dp.include_router(admin.router)
+    await dp.start_polling(bot)
 
-# Регистрация хэндлеров
-register_admin_handlers(dp)
-register_doctor_handlers(dp)
-register_patient_handlers(dp)
-
-if __name__ == '__main__':
-    init_db()
-    executor.start_polling(dp, skip_updates=True)
+if __name__ == "__main__":
+    asyncio.run(main())

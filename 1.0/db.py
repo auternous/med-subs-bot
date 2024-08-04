@@ -1,90 +1,36 @@
-import sqlite3
+import aiosqlite
 
-def init_db():
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS doctors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
-            specialization TEXT,
-            is_approved BOOLEAN DEFAULT 0
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS patients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
-            doctor_id INTEGER,
-            referral_code TEXT,
-            referral_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            from_user INTEGER,
-            to_user INTEGER,
-            message TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+async def init_db():
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute('''CREATE TABLE IF NOT EXISTS doctors (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT,
+                            surname TEXT,
+                            phone TEXT,
+                            specialization TEXT,
+                            approved BOOLEAN DEFAULT FALSE)''')
+        await db.commit()
 
-def add_admin(user_id):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO admins (user_id) VALUES (?)', (user_id,))
-    conn.commit()
-    conn.close()
+async def add_doctor(name, surname, phone):
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute('INSERT INTO doctors (name, surname, phone) VALUES (?, ?, ?)',
+                         (name, surname, phone))
+        await db.commit()
 
-# Вызов инициализации базы данных
-init_db()
+async def update_doctor_specialization(doctor_id, specialization):
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute('UPDATE doctors SET specialization = ?, approved = TRUE WHERE id = ?',
+                         (specialization, doctor_id))
+        await db.commit()
 
-def add_doctor(user_id, specialization):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO doctors (user_id, specialization) VALUES (?, ?)', (user_id, specialization))
-    conn.commit()
-    conn.close()
+async def get_doctor_by_id(doctor_id):
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT * FROM doctors WHERE id = ?', (doctor_id,)) as cursor:
+            doctor = await cursor.fetchone()
+    return doctor
 
-def generate_referral_link(doctor_id):
-    # Генерация ссылки (упрощенная версия)
-    referral_code = f'ref-{doctor_id}'
-    return f'https://t.me/YOUR_BOT?start={referral_code}'
-
-def get_doctor_by_referral(referral_code):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT id FROM doctors WHERE id = ?', (referral_code.split('-')[1],))
-    doctor = cursor.fetchone()
-    conn.close()
-    return doctor[0] if doctor else None
-
-def add_patient(user_id, doctor_id, referral_code):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO patients (user_id, doctor_id, referral_code) VALUES (?, ?, ?)', (user_id, doctor_id, referral_code))
-    conn.commit()
-    conn.close()
-
-def approve_doctor(doctor_id):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE doctors SET is_approved = 1 WHERE id = ?', (doctor_id,))
-    conn.commit()
-    conn.close()
-
-def add_specialization_to_doctor(doctor_id, specialization):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE doctors SET specialization = ? WHERE id = ?', (specialization, doctor_id))
-    conn.commit()
-    conn.close()
+async def get_pending_doctors():
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT * FROM doctors WHERE approved = FALSE') as cursor:
+            doctors = await cursor.fetchall()
+    return doctors

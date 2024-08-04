@@ -1,25 +1,15 @@
-from aiogram import types, Dispatcher
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from db import add_patient, get_doctor_by_referral
+from aiogram import types
+from aiogram.dispatcher.filters import Command
 
-class PatientStates(StatesGroup):
-    awaiting_referral_code = State()
+from config import dp, bot
+from db import link_patient_to_doctor
 
-async def start_patient_registration(message: types.Message):
-    await message.reply("Привет, пациент! Отправь код реферала.")
-    await PatientStates.awaiting_referral_code.set()
+@dp.message_handler(Command("start"))
+async def start_command(message: types.Message):
+    await message.answer("Привет! Для регистрации перейдите по реферальной ссылке вашего доктора.")
 
-async def add_referral_code(message: types.Message, state: FSMContext):
-    referral_code = message.text
-    doctor_id = get_doctor_by_referral(referral_code)
-    if doctor_id:
-        add_patient(message.from_user.id, doctor_id, referral_code)
-        await state.finish()
-        await message.reply("Вы успешно прикреплены к врачу. Теперь вы можете отправлять сообщения.")
-    else:
-        await message.reply("Неверный код реферала. Попробуйте снова.")
-
-def register_patient_handlers(dp: Dispatcher):
-    dp.register_message_handler(start_patient_registration, commands="start_patient", state="*")
-    dp.register_message_handler(add_referral_code, state=PatientStates.awaiting_referral_code)
+@dp.message_handler(Command("referral"))
+async def referral_command(message: types.Message):
+    doctor_id = int(message.get_args())
+    link_patient_to_doctor(message.from_user.id, doctor_id)
+    await message.answer("Вы успешно зарегистрированы. Теперь вы можете общаться с вашим доктором.")

@@ -1,32 +1,49 @@
-from aiogram import types, Dispatcher
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from db import approve_doctor, add_specialization_to_doctor
+import logging
+from aiogram import Router, types
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import Command
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.filters.state import StateFilter
 
-class AdminStates(StatesGroup):
-    awaiting_doctor_id = State()
-    awaiting_specialization = State()
+from config import bot, ADMIN_ID
+from db import update_doctor_specialization, get_pending_doctors, get_doctor_by_id
 
-async def start_admin_registration(message: types.Message):
-    await message.reply("Привет, админ! Чтобы одобрить врача, введи его ID.")
-    await AdminStates.awaiting_doctor_id.set()
+router = Router()
 
-async def get_doctor_id(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['doctor_id'] = int(message.text)
-    await message.reply("Теперь отправь специализацию врача.")
-    await AdminStates.awaiting_specialization.set()
+class AdminActions(StatesGroup):
+    waiting_for_specialization = State()
 
-async def add_specialization(message: types.Message, state: FSMContext):
-    specialization = message.text
-    async with state.proxy() as data:
-        doctor_id = data['doctor_id']
-        approve_doctor(doctor_id)
-        add_specialization_to_doctor(doctor_id, specialization)
-    await state.finish()
-    await message.reply(f"Врач с ID {doctor_id} одобрен со специализацией {specialization}.")
+@router.message(lambda message: message.text.lower() in ["да", "нет"])
+async def admin_confirmation(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
 
-def register_admin_handlers(dp: Dispatcher):
-    dp.register_message_handler(start_admin_registration, commands="start_admin", state="*")
-    dp.register_message_handler(get_doctor_id, state=AdminStates.awaiting_doctor_id)
-    dp.register_message_handler(add_specialization, state=AdminStates.awaiting_specialization)
+    logging.info("Admin confirmation received: %s", message.text)
+
+    if message.text.lower() == "да":
+        pending_doctors = await get_pending_doctors()
+        logging.info("Pending doctors: %s", pending_doctors)
+        
+        if not pending_doctors:
+            await message.answer("Нет заявок на рассмотрение.")
+            return
+
+        doctor = pending_doctors[0]
+        await state.update_data(doctor_id=doctor[0])
+        await state.set_state(AdminActions.waiting_for_specialization)
+        await message.answer(f"Введите специализацию для доктора {doctor[1]} {doctor[2]} (ID: {doctor[0]}):")
+    else:
+        await message.answer("Заявка отклонена.")
+
+@router.message(StateFilter(AdminActions.waiting_for_specialization))
+async def set_specialization(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    logging.info("State data: %s", state_data)
+
+    doctor_id = state_data["doctor_id"]
+    await update_doctor_specialization(doctor_id, message.text)
+    doctor = await get_doctor_by_id(doctor_id)
+    logging.info("Doctor info: %s", doctor)
+
+    await message.answer(f"Доктор {doctor[1]} {doctor[2]} успешно добавлен с специализацией: {doctor[4]}.")
+    await state.clear()

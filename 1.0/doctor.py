@@ -1,23 +1,53 @@
-from aiogram import types, Dispatcher
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from db import add_doctor, generate_referral_link
+from aiogram import Router, types
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command
+from aiogram.filters.state import StateFilter
 
-class DoctorStates(StatesGroup):
-    awaiting_specialization = State()
+from config import bot, dp, ADMIN_ID
+from db import add_doctor
 
-async def start_doctor_registration(message: types.Message):
-    await message.reply("Привет, доктор! Отправь свою специализацию.")
-    await DoctorStates.awaiting_specialization.set()
+router = Router()
 
-async def add_specialization(message: types.Message, state: FSMContext):
-    specialization = message.text
-    add_doctor(message.from_user.id, specialization)
-    await state.finish()
-    await message.reply(f"Специализация {specialization} добавлена. Генерирую ссылку...")
-    referral_link = generate_referral_link(message.from_user.id)
-    await message.reply(f"Вот ваша реферальная ссылка: {referral_link}")
+class DoctorRegistration(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_surname = State()
+    waiting_for_phone = State()
+    confirmation = State()
 
-def register_doctor_handlers(dp: Dispatcher):
-    dp.register_message_handler(start_doctor_registration, commands="start_doctor", state="*")
-    dp.register_message_handler(add_specialization, state=DoctorStates.awaiting_specialization)
+@router.message(Command("reg"))
+async def cmd_register(message: types.Message, state: FSMContext):
+    await state.set_state(DoctorRegistration.waiting_for_name)
+    await message.answer("Введите имя доктора:")
+
+@router.message(StateFilter(DoctorRegistration.waiting_for_name))
+async def process_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(DoctorRegistration.waiting_for_surname)
+    await message.answer("Введите фамилию доктора:")
+
+@router.message(StateFilter(DoctorRegistration.waiting_for_surname))
+async def process_surname(message: types.Message, state: FSMContext):
+    await state.update_data(surname=message.text)
+    await state.set_state(DoctorRegistration.waiting_for_phone)
+    await message.answer("Введите номер телефона доктора:")
+
+@router.message(StateFilter(DoctorRegistration.waiting_for_phone))
+async def process_phone(message: types.Message, state: FSMContext):
+    await state.update_data(phone=message.text)
+    user_data = await state.get_data()
+    await message.answer(
+        f"Анкета доктора:\nИмя: {user_data['name']}\nФамилия: {user_data['surname']}\nТелефон: {user_data['phone']}\n\nПодтвердите отправку анкеты (да/нет)?")
+    await state.set_state(DoctorRegistration.confirmation)
+
+@router.message(StateFilter(DoctorRegistration.confirmation))
+async def process_confirmation(message: types.Message, state: FSMContext):
+    if message.text.lower() == 'да':
+        user_data = await state.get_data()
+        await add_doctor(user_data['name'], user_data['surname'], user_data['phone'])
+        await message.answer("Анкета отправлена на рассмотрение.")
+        await state.clear()
+        await bot.send_message(ADMIN_ID, f"Новая заявка на регистрацию:\nИмя: {user_data['name']}\nФамилия: {user_data['surname']}\nТелефон: {user_data['phone']}\n\nДобавить доктора (да/нет)?")
+    else:
+        await message.answer("Регистрация отменена. Начните сначала с команды /reg.")
+        await state.clear()
