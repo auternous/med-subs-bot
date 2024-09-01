@@ -8,6 +8,7 @@ from db import init_db
 import doctor
 import admin
 
+
 logging.basicConfig(level=logging.INFO)
 
 async def main():
