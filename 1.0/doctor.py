@@ -16,8 +16,10 @@ class DoctorRegistration(StatesGroup):
 
 @router.message(Command("reg"))
 async def cmd_register(message: types.Message, state: FSMContext):
+    await state.clear()  # Сбрасываем состояние перед установкой нового
     await state.set_state(DoctorRegistration.waiting_for_name)
     await message.answer("Введите ФИО доктора:")
+
 
 @router.message(StateFilter(DoctorRegistration.waiting_for_name))
 async def process_surname(message: types.Message, state: FSMContext):
