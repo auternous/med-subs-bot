@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from db import get_doctor_by_user_id, add_patient, add_subscriber_to_doctor, get_patient_by_id
+from db import get_doctor_by_user_id, add_patient, add_subscriber_to_doctor, get_patient_by_id, get_doctors_for_patient
 from datetime import datetime
 
 router = Router()
@@ -13,6 +13,15 @@ class PatientRegistration(StatesGroup):
     waiting_for_name = State()
     waiting_for_phone = State()
     confirmation = State()
+
+# Функция для генерации главного меню
+def generate_main_menu():
+    buttons = [
+        [InlineKeyboardButton(text="Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="Расписание", callback_data="schedule")],
+        [InlineKeyboardButton(text="Написать доктору", callback_data="contact_doctor")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @router.message(CommandStart(deep_link=True))
 async def patient_start(message: types.Message, state: FSMContext):
@@ -72,14 +81,7 @@ async def process_patient_confirmation(message: types.Message, state: FSMContext
         await add_subscriber_to_doctor(user_data['doctor_id'], message.from_user.id)
 
         # Инлайн-кнопки после завершения регистрации
-        buttons = [
-            [InlineKeyboardButton(text="Профиль", callback_data="profile")],
-            [InlineKeyboardButton(text="Расписание", callback_data="schedule")],
-            [InlineKeyboardButton(text="Написать доктору", callback_data="contact_doctor")]
-        ]
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-        await message.answer("Регистрация завершена. Добро пожаловать!", reply_markup=keyboard)
+        await message.answer("Регистрация завершена. Добро пожаловать!", reply_markup=generate_main_menu())
         await state.clear()
     else:
         # Повторный ввод данных
@@ -105,9 +107,8 @@ async def show_profile(callback_query: types.CallbackQuery):
     )
 
     # Изменяем текст существующего сообщения
-    await callback_query.message.edit_text(profile_info, reply_markup=callback_query.message.reply_markup)
+    await callback_query.message.edit_text(profile_info, reply_markup=generate_main_menu())
     await callback_query.answer()
-
 
 # Обработка кнопки "Расписание"
 @router.callback_query(lambda c: c.data == "schedule")
@@ -115,12 +116,35 @@ async def show_schedule(callback_query: types.CallbackQuery):
     schedule_info = "График работы:\nПонедельник - Пятница: 9:00 - 18:00\nСуббота: 10:00 - 15:00\nВоскресенье: выходной"
 
     # Изменяем текст существующего сообщения
-    await callback_query.message.edit_text(schedule_info, reply_markup=callback_query.message.reply_markup)
+    await callback_query.message.edit_text(schedule_info, reply_markup=generate_main_menu())
     await callback_query.answer()
-
 
 # Обработка кнопки "Написать доктору"
 @router.callback_query(lambda c: c.data == "contact_doctor")
-async def contact_doctor(callback_query: types.CallbackQuery):
-    await callback_query.message.answer("Специалисты")
+async def show_doctors_list(callback_query: types.CallbackQuery):
+    patient_id = callback_query.from_user.id
+    doctors = await get_doctors_for_patient(patient_id)
+
+    if not doctors:
+        await callback_query.message.edit_text("У вас нет закрепленных врачей.")
+        return
+
+    unique_doctors = {doctor[0]: doctor for doctor in doctors}.values()
+
+    buttons = [
+        [InlineKeyboardButton(text=f"{doctor[1]} ({doctor[2]})", callback_data=f"doctor_{doctor[0]}")]
+        for doctor in unique_doctors
+    ]
+
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="back_to_menu")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback_query.message.edit_text("Выберите доктора:", reply_markup=markup)
+    await callback_query.answer()
+
+# Обработка кнопки "Назад"
+@router.callback_query(lambda c: c.data == "back_to_menu")
+async def back_to_menu(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text("Главное меню:", reply_markup=generate_main_menu())
     await callback_query.answer()

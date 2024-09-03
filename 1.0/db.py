@@ -140,3 +140,12 @@ async def get_patient_by_id(telegram_id):
                 'specialization': patient[6]  # Добавляем специализацию доктора
             } if patient else None
 
+async def get_doctors_for_patient(telegram_id):
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('''
+            SELECT doctors.id, doctors.fio, doctors.specialization 
+            FROM doctors 
+            JOIN patients ON doctors.id = patients.doctor_id 
+            WHERE patients.telegram_id = ?
+        ''', (telegram_id,)) as cursor:
+            return await cursor.fetchall()
