@@ -2,10 +2,13 @@ from aiogram import Router, types
 from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, StateFilter
 from aiogram.exceptions import TelegramNetworkError
 from config import bot, dp, ADMIN_ID
-from db import add_doctor, get_doctor_by_user_id, get_doctor_for_link, update_doctor_specialization
+from db import (add_doctor, get_doctor_by_user_id, get_doctor_for_link, 
+                update_doctor_specialization, get_active_dialogue, 
+                complete_dialogue, send_message_to_patient)
 
 router = Router()
 
@@ -16,6 +19,10 @@ class DoctorRegistration(StatesGroup):
 
 class AdminActions(StatesGroup):
     waiting_for_specialization = State()
+
+class DialogueState(StatesGroup):
+    waiting_for_message = State()  # Ожидание сообщения пациента
+    waiting_for_reply = State() 
 
 @router.message(Command("reg"))
 async def cmd_register(message: types.Message, state: FSMContext):
@@ -106,3 +113,69 @@ async def handle_create_link(callback_query: types.CallbackQuery):
     invite_link = f"https://t.me/{bot_info.username}?start=doctor_{doctor_id}"
     await callback_query.message.answer(f"Ваша уникальная ссылка для приглашения пациентов:\n{invite_link}")
     await callback_query.answer()
+
+
+@router.callback_query(F.data.startswith("reply_to_patient_"))
+async def reply_to_patient(callback_query: types.CallbackQuery, state: FSMContext):
+    # Получаем patient_id из callback_data
+    data = callback_query.data.split("_")
+    patient_id = int(data[3])  # Извлекаем ID пациента
+
+    # Сохраняем patient_id в состояние
+    await state.update_data(patient_id=patient_id)
+
+    # Запрашиваем сообщение у доктора для отправки пациенту
+    await callback_query.message.edit_text("Введите ваше сообщение для пациента:")
+    await state.set_state(DialogueState.waiting_for_reply)
+    await callback_query.answer()
+
+
+@router.message(StateFilter(DialogueState.waiting_for_reply))
+async def process_doctor_reply(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    patient_id = state_data.get("patient_id")
+
+    # Проверяем, активен ли диалог
+    dialogue = await get_active_dialogue(patient_id, message.from_user.id)
+    if not dialogue or dialogue[2] == "completed":  # Проверяем, завершён ли диалог
+        await message.answer("Диалог завершён. Вы не можете отправить сообщение.")
+        return
+
+    # Отправляем сообщение пациенту
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ответить", callback_data=f"reply_to_doctor_{message.from_user.id}")],
+        [InlineKeyboardButton(text="Завершить диалог", callback_data=f"end_dialogue_{message.from_user.id}")]
+    ])
+
+    await bot.send_message(patient_id, f"Ответ от доктора: {message.text}", reply_markup=markup)
+    await message.answer("Ваше сообщение отправлено пациенту.")
+
+
+
+@router.callback_query(F.data.startswith("end_dialogue_"))
+async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMContext):
+    data = callback_query.data.split("_")
+    patient_id = int(data[2])
+    doctor_id = callback_query.from_user.id
+
+    # Получаем активный диалог
+    dialogue = await get_active_dialogue(patient_id, doctor_id)
+    
+    if not dialogue:
+        await callback_query.message.answer("Ошибка: диалог не найден.")
+        return
+
+    # Завершаем диалог
+    await complete_dialogue(dialogue[0])
+
+    # Очищаем состояние FSM для доктора
+    await state.clear()
+
+    # Уведомляем обе стороны
+    await bot.send_message(patient_id, "Доктор завершил диалог.")
+    await callback_query.message.answer("Вы завершили диалог с пациентом.")
+    
+    # Очищаем состояние FSM для пациента
+    await bot.send_message(patient_id, "Диалог завершён, вы больше не можете отправлять сообщения.", reply_markup=None)
+    await callback_query.answer()
+

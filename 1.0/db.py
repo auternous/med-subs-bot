@@ -1,6 +1,7 @@
 import aiosqlite
 import json
 import logging
+from aiogram import Bot
 
 async def init_db():
     async with aiosqlite.connect('bot.db') as db:
@@ -11,7 +12,7 @@ async def init_db():
                             specialization TEXT,
                             approved BOOLEAN DEFAULT FALSE,
                             user_id INTEGER,
-                            subscribers TEXT)''')  # subscribers: JSON список Telegram ID подписчиков
+                            subscribers TEXT)''')
 
         await db.execute('''CREATE TABLE IF NOT EXISTS patients (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,24 +20,62 @@ async def init_db():
                             telegram_id INTEGER,
                             phone TEXT,
                             doctor_id INTEGER,
-                            registration_date TEXT)''')  # Добавлены поля name и phone
+                            registration_date TEXT)''')
+        
+        await db.execute('''CREATE TABLE IF NOT EXISTS dialogues (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            patient_id INTEGER,
+                            doctor_id INTEGER,
+                            state TEXT DEFAULT 'active')''')  # active/completed
+
         await db.commit()
 
-# Добавление подписчика к доктору
-async def add_subscriber_to_doctor(doctor_id, subscriber_id):
+
+async def send_message_to_patient(telegram_id: int, message: str, bot: Bot):
+    try:
+        await bot.send_message(chat_id=telegram_id, text=message)
+    except Exception as e:
+        print(f"Failed to send message to patient {telegram_id}: {e}")
+
+
+async def start_dialogue(patient_id, doctor_id):
     async with aiosqlite.connect('bot.db') as db:
-        async with db.execute('SELECT subscribers FROM doctors WHERE id = ?', (doctor_id,)) as cursor:
+        cursor = await db.execute('INSERT INTO dialogues (patient_id, doctor_id) VALUES (?, ?)',
+                                  (patient_id, doctor_id))
+        dialogue_id = cursor.lastrowid
+        await db.commit()
+    return dialogue_id
+
+async def get_active_dialogue(patient_id, doctor_id):
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT * FROM dialogues WHERE patient_id = ? AND doctor_id = ? AND state = "active"',
+                              (patient_id, doctor_id)) as cursor:
+            dialogue = await cursor.fetchone()
+    return dialogue
+
+async def complete_dialogue(dialogue_id):
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute('UPDATE dialogues SET state = "completed" WHERE id = ?', (dialogue_id,))
+        await db.commit()
+
+
+async def add_subscriber_to_doctor(doctor_telegram_id, subscriber_id):
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT subscribers FROM doctors WHERE user_id = ?', (doctor_telegram_id,)) as cursor:
             row = await cursor.fetchone()
             if row and row[0]:
                 subscribers = json.loads(row[0])
             else:
                 subscribers = []
 
-            subscribers.append(subscriber_id)
+            # Проверяем, что пациент еще не подписан
+            if subscriber_id not in subscribers:
+                subscribers.append(subscriber_id)
 
-            await db.execute('UPDATE doctors SET subscribers = ? WHERE id = ?',
-                             (json.dumps(subscribers), doctor_id))
+            await db.execute('UPDATE doctors SET subscribers = ? WHERE user_id = ?',
+                             (json.dumps(subscribers), doctor_telegram_id))
             await db.commit()
+
 
 # Получение подписчиков доктора
 async def get_doctor_subscribers(doctor_id):
@@ -51,8 +90,9 @@ async def get_doctor_subscribers(doctor_id):
 async def add_patient(name, telegram_id, phone, doctor_id, registration_date):
     async with aiosqlite.connect('bot.db') as db:
         await db.execute('INSERT INTO patients (name, telegram_id, phone, doctor_id, registration_date) VALUES (?, ?, ?, ?, ?)',
-                         (name, telegram_id, phone, doctor_id, registration_date))
+                         (name, telegram_id, phone, doctor_id, registration_date))  # doctor_id теперь будет содержать Telegram ID доктора
         await db.commit()
+
 
 # Обновление данных пациента
 async def update_patient_info(telegram_id, name=None, phone=None):
@@ -124,9 +164,9 @@ async def get_doctor_for_link(user_id):
 async def get_patient_by_id(telegram_id):
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('''
-            SELECT patients.*, doctors.specialization 
-            FROM patients 
-            JOIN doctors ON patients.doctor_id = doctors.id 
+            SELECT patients.*, doctors.specialization, doctors.user_id
+            FROM patients
+            JOIN doctors ON patients.doctor_id = doctors.user_id  -- Связываем по Telegram ID доктора
             WHERE patients.telegram_id = ?
         ''', (telegram_id,)) as cursor:
             patient = await cursor.fetchone()
@@ -135,17 +175,20 @@ async def get_patient_by_id(telegram_id):
                 'name': patient[1],
                 'telegram_id': patient[2],
                 'phone': patient[3],
-                'doctor_id': patient[4],  # Это остается на случай, если понадобится ID
+                'doctor_id': patient[7],  # Теперь возвращаем telegram_id доктора
                 'registration_date': patient[5],
-                'specialization': patient[6]  # Добавляем специализацию доктора
+                'specialization': patient[6]  # Специализация доктора
             } if patient else None
+
 
 async def get_doctors_for_patient(telegram_id):
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('''
-            SELECT doctors.id, doctors.fio, doctors.specialization 
+            SELECT doctors.user_id, doctors.fio, doctors.specialization 
             FROM doctors 
-            JOIN patients ON doctors.id = patients.doctor_id 
+            JOIN patients ON doctors.user_id = patients.doctor_id 
             WHERE patients.telegram_id = ?
         ''', (telegram_id,)) as cursor:
             return await cursor.fetchall()
+
+
