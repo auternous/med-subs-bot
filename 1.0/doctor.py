@@ -115,18 +115,19 @@ async def handle_create_link(callback_query: types.CallbackQuery):
     await callback_query.answer()
 
 
+# Сообщение от пациента доктору по нажатию на кнопку
 @router.callback_query(F.data.startswith("reply_to_patient_"))
 async def reply_to_patient(callback_query: types.CallbackQuery, state: FSMContext):
-    # Получаем patient_id из callback_data
+    # Извлечение patient_id из callback_data
     data = callback_query.data.split("_")
-    patient_id = int(data[3])  # Извлекаем ID пациента
+    patient_id = int(data[3])
 
-    # Сохраняем patient_id в состояние
+    # Сохранение patient_id в состоянии
     await state.update_data(patient_id=patient_id)
 
-    # Запрашиваем сообщение у доктора для отправки пациенту
+    # Сообщение доктору с просьбой ввести сообщение для пациента
     await callback_query.message.edit_text("Введите ваше сообщение для пациента:")
-    await state.set_state(DialogueState.waiting_for_reply)
+    await state.set_state(DialogueState.waiting_for_reply)  # Переход в состояние ожидания сообщения
     await callback_query.answer()
 
 
@@ -152,6 +153,17 @@ async def process_doctor_reply(message: types.Message, state: FSMContext):
 
 
 
+# Главное меню пациента
+def generate_main_menu():
+    buttons = [
+        [InlineKeyboardButton(text="Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="Расписание", callback_data="schedule")],
+        [InlineKeyboardButton(text="Написать доктору", callback_data="contact_doctor")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# Завершение диалога доктором
 @router.callback_query(F.data.startswith("end_dialogue_"))
 async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data.split("_")
@@ -172,10 +184,9 @@ async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMCon
     await state.clear()
 
     # Уведомляем обе стороны
-    await bot.send_message(patient_id, "Доктор завершил диалог.")
-    await callback_query.message.answer("Вы завершили диалог с пациентом.")
-    
-    # Очищаем состояние FSM для пациента
-    await bot.send_message(patient_id, "Диалог завершён, вы больше не можете отправлять сообщения.", reply_markup=None)
-    await callback_query.answer()
+    await bot.send_message(patient_id, "Доктор завершил диалог.", reply_markup=generate_main_menu())
+    await callback_query.message.answer("Вы завершили диалог с пациентом.", reply_markup=None)
 
+    # Очищаем состояние FSM для пациента (если используется FSM для пациента)
+    await state.clear()
+    await callback_query.answer()

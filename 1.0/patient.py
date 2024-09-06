@@ -175,42 +175,18 @@ async def send_message_to_doctor(message: types.Message, state: FSMContext):
     await message.answer("Сообщение отправлено доктору.")
 
 
-
 @router.callback_query(F.data.startswith("reply_to_doctor_"))
 async def reply_to_doctor(callback_query: types.CallbackQuery, state: FSMContext):
-    # Получение doctor_id из callback_data
+    # Извлечение doctor_id из callback_data
     data = callback_query.data.split("_")
-    doctor_id = int(data[3])  # Извлечение ID доктора
+    doctor_id = int(data[3])
 
     # Сохранение doctor_id в состоянии
     await state.update_data(doctor_telegram_id=doctor_id)
 
-    # Запрос сообщения у пациента для отправки доктору
+    # Сообщение пациенту с просьбой ввести сообщение для доктора
     await callback_query.message.edit_text("Введите ваше сообщение для доктора:")
-    await state.set_state(DialogueState.waiting_for_message)
+    await state.set_state(DialogueState.waiting_for_message)  # Переход в состояние ожидания сообщения
     await callback_query.answer()
 
 
-@router.callback_query(F.data.startswith("end_dialogue_"))
-async def end_dialogue_doctor(callback_query: types.CallbackQuery):
-    data = callback_query.data.split("_")
-    patient_id = int(data[2])
-    doctor_id = callback_query.from_user.id
-
-    # Получаем активный диалог
-    dialogue = await get_active_dialogue(patient_id, doctor_id)
-    
-    if not dialogue:
-        await callback_query.message.answer("Ошибка: диалог не найден.")
-        return
-
-    # Проверяем, что вернулось из get_active_dialogue
-    print(f"Диалог: {dialogue}")
-    
-    # Завершаем диалог, предполагая, что ID находится в первом элементе кортежа
-    await complete_dialogue(dialogue[0])  # Или другой индекс, если необходимо
-
-    # Уведомляем обе стороны
-    await bot.send_message(patient_id, "Доктор завершил диалог.")
-    await callback_query.message.answer("Вы завершили диалог с пациентом.")
-    await callback_query.answer()
