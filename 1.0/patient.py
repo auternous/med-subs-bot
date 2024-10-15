@@ -263,6 +263,7 @@ async def send_message_to_doctor(message: types.Message, state: FSMContext):
 
 
 # Handle doctor's reply to patient
+# Обработчик нажатия кнопки "Ответить" пациентом
 @router.callback_query(F.data.startswith("reply_to_doctor_"))
 async def reply_to_doctor(callback_query: types.CallbackQuery, state: FSMContext):
     # Извлечение doctor_id из callback_data
@@ -272,10 +273,13 @@ async def reply_to_doctor(callback_query: types.CallbackQuery, state: FSMContext
     # Сохранение doctor_id в состоянии
     await state.update_data(doctor_telegram_id=doctor_id)
 
-    # Сообщение пациенту с просьбой ввести сообщение для доктора
-    await callback_query.message.edit_text("Введите ваше сообщение для доктора:")
-    await state.set_state(DialogueState.waiting_for_message)  # Переход в состояние ожидания сообщения
+    # Вместо редактирования сообщения, отправляем новое сообщение
+    await callback_query.message.answer("Введите ваше сообщение для доктора:")
+    await state.set_state(DialogueState.waiting_for_message)
     await callback_query.answer()
+
+
+
 
 
 # Handle ending dialogue by the patient

@@ -177,9 +177,9 @@ async def reply_to_patient(callback_query: types.CallbackQuery, state: FSMContex
     # Сохранение patient_id в состоянии
     await state.update_data(patient_id=patient_id)
 
-    # Сообщение доктору с просьбой ввести сообщение для пациента
-    await callback_query.message.edit_text("Введите ваше сообщение для пациента:")
-    await state.set_state(DialogueState.waiting_for_reply)  # Переход в состояние ожидания сообщения
+    # Вместо редактирования сообщения, отправляем новое сообщение
+    await callback_query.message.answer("Введите ваше сообщение для пациента:")
+    await state.set_state(DialogueState.waiting_for_reply)
     await callback_query.answer()
 
 
