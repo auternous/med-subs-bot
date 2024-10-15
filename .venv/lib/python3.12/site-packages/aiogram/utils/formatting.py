@@ -171,7 +171,7 @@ class Text(Iterable[NodeType]):
     def __add__(self, other: NodeType) -> "Text":
         if isinstance(other, Text) and other.type == self.type and self._params == other._params:
             return type(self)(*self, *other, **self._params)
-        if type(self) == Text and isinstance(other, str):
+        if type(self) is Text and isinstance(other, str):
             return type(self)(*self, other, **self._params)
         return Text(self, other)
 
@@ -442,6 +442,17 @@ class BlockQuote(Text):
     type = MessageEntityType.BLOCKQUOTE
 
 
+class ExpandableBlockQuote(Text):
+    """
+    Expandable block quote element.
+
+    Will be wrapped into :obj:`aiogram.types.message_entity.MessageEntity`
+    with type :obj:`aiogram.enums.message_entity_type.MessageEntityType.EXPANDABLE_BLOCKQUOTE`
+    """
+
+    type = MessageEntityType.EXPANDABLE_BLOCKQUOTE
+
+
 NODE_TYPES: Dict[Optional[str], Type[Text]] = {
     Text.type: Text,
     HashTag.type: HashTag,
@@ -461,6 +472,7 @@ NODE_TYPES: Dict[Optional[str], Type[Text]] = {
     TextMention.type: TextMention,
     CustomEmoji.type: CustomEmoji,
     BlockQuote.type: BlockQuote,
+    ExpandableBlockQuote.type: ExpandableBlockQuote,
 }
 
 
