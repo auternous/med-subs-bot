@@ -235,3 +235,23 @@ async def get_patient_by_telegram_id(telegram_id):
         async with db.execute('SELECT * FROM patients WHERE telegram_id = ?', (telegram_id,)) as cursor:
             patient = await cursor.fetchone()
     return patient  # Returns a Row or None if not found
+
+async def get_doctor_count():
+    async with get_db_connection() as db:
+        async with db.execute('SELECT COUNT(*) as count FROM doctors') as cursor:
+            result = await cursor.fetchone()
+            return result['count'] if result else 0
+
+# Function to get the count of patients
+async def get_patient_count():
+    async with get_db_connection() as db:
+        async with db.execute('SELECT COUNT(*) as count FROM patients') as cursor:
+            result = await cursor.fetchone()
+            return result['count'] if result else 0
+
+# Function to get a list of doctors (optional)
+async def get_doctor_list():
+    async with get_db_connection() as db:
+        async with db.execute('SELECT fio, specialization FROM doctors') as cursor:
+            doctors = await cursor.fetchall()
+        return doctors  # List of Row objects
