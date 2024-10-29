@@ -1,3 +1,5 @@
+# patient.py
+
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -6,13 +8,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db import (
     get_doctor_by_user_id,
     add_patient,
-    add_subscriber_to_doctor,
-    get_patient_by_id,
+    add_patient_doctor_relation,
+    get_patient_by_telegram_id,         # Используйте эту функцию
+    get_patient_id_by_telegram_id,
     get_doctors_for_patient,
     get_doctor_by_id,
     start_dialogue,
     get_active_dialogue,
-    get_patient_by_telegram_id,
     complete_dialogue,
     get_invite_code,
     mark_invite_code_as_used
@@ -68,11 +70,26 @@ async def patient_start(message: types.Message, state: FSMContext):
     # Mark the invite code as used
     await mark_invite_code_as_used(code)
 
-    # Save the doctor's Telegram ID
-    doctor_telegram_id = doctor['user_id']
-    await state.update_data(doctor_telegram_id=doctor_telegram_id)
-    await state.set_state(PatientRegistration.waiting_for_name)
-    await message.answer("Введите ваше ФИО:")
+    # Save the doctor's ID in state
+    await state.update_data(doctor_id=doctor_id)
+
+    # Check if patient is already registered
+    existing_patient = await get_patient_by_telegram_id(message.from_user.id)
+    if existing_patient:
+        patient_id = existing_patient['id']
+        # Patient is already registered
+        # Associate the patient with the new doctor
+        await add_patient_doctor_relation(
+            patient_id=patient_id,
+            doctor_id=doctor_id,
+            registration_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        await message.answer("Вы были успешно добавлены к новому врачу.", reply_markup=generate_main_menu())
+        await state.clear()
+    else:
+        # Patient is not registered, proceed with registration
+        await state.set_state(PatientRegistration.waiting_for_name)
+        await message.answer("Введите ваше ФИО:")
 
 # Process patient's name
 @router.message(StateFilter(PatientRegistration.waiting_for_name))
@@ -89,52 +106,65 @@ async def process_patient_name(message: types.Message, state: FSMContext):
 async def process_patient_confirmation(message: types.Message, state: FSMContext):
     if message.text.lower() == 'да':
         user_data = await state.get_data()
-        doctor_telegram_id = user_data['doctor_telegram_id']
-        patient_id = message.from_user.id
+        doctor_id = user_data['doctor_id']
+        patient_telegram_id = message.from_user.id
 
-        # Check if patient with this telegram_id already exists
-        existing_patient = await get_patient_by_telegram_id(patient_id)
-        if existing_patient:
-            await message.answer("Вы уже зарегистрированы в системе.")
-            await state.clear()
-            return
-
+        # Add the patient to the patients table
         await add_patient(
             name=user_data['name'],
-            telegram_id=patient_id,
-            doctor_id=doctor_telegram_id,
+            telegram_id=patient_telegram_id,
             registration_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
-        await add_subscriber_to_doctor(doctor_telegram_id, patient_id)
+        # Get patient ID
+        patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+
+        # Associate patient with the doctor
+        await add_patient_doctor_relation(
+            patient_id=patient_id,
+            doctor_id=doctor_id,
+            registration_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+
         await message.answer("Регистрация завершена.", reply_markup=generate_main_menu())
         await state.clear()
     else:
         await message.answer("Регистрация отменена.")
         await state.clear()
 
-# Handle main menu actions
 @router.callback_query(lambda c: c.data == "profile")
 async def show_profile(callback_query: types.CallbackQuery):
-    patient = await get_patient_by_id(callback_query.from_user.id)
+    patient = await get_patient_by_telegram_id(callback_query.from_user.id)
     if not patient:
         await callback_query.message.edit_text("Ошибка: не удалось получить данные профиля.")
         return
 
-    registration_date_str = patient['registration_date']
-    registration_date = datetime.strptime(registration_date_str, "%Y-%m-%d %H:%M:%S")
-    days_left = 5 - (datetime.now() - registration_date).days
+    profile_info = f"Имя: {patient['name']}\n"
 
-    if days_left < 0:
-        days_left = 0
+    # Optionally, list associated doctors
+    patient_id = patient['id']
+    doctors = await get_doctors_for_patient(patient_id)
+    if doctors:
+        doctor_list = "\n".join([f"{doc['fio']} ({doc['specialization']})" for doc in doctors])
+        profile_info += f"Ваши врачи:\n{doctor_list}"
+    else:
+        profile_info += "У вас нет закрепленных врачей."
 
-    profile_info = (
-        f"Имя: {patient['name']}\n"
-        f"Ваш доктор: {patient['specialization']}\n"
-        f"Подписка заканчивается через: {days_left} дней"
-    )
+    # Получаем текущий текст сообщения и клавиатуру
+    current_text = callback_query.message.text
+    current_markup = callback_query.message.reply_markup
 
-    await callback_query.message.edit_text(profile_info, reply_markup=generate_main_menu())
+    # Создаем новую клавиатуру
+    new_markup = generate_main_menu()
+
+    # Проверяем, изменились ли текст или клавиатура
+    if profile_info != current_text or new_markup != current_markup:
+        await callback_query.message.edit_text(profile_info, reply_markup=new_markup)
+    else:
+        # Текст и клавиатура не изменились, можно пропустить вызов edit_text()
+        pass
+
     await callback_query.answer()
+
 
 @router.callback_query(lambda c: c.data == "schedule")
 async def show_schedule(callback_query: types.CallbackQuery):
@@ -144,7 +174,12 @@ async def show_schedule(callback_query: types.CallbackQuery):
 
 @router.callback_query(lambda c: c.data == "contact_doctor")
 async def contact_doctor(callback_query: types.CallbackQuery):
-    patient_id = callback_query.from_user.id
+    patient_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+    if not patient_id:
+        await callback_query.message.edit_text("Ошибка: не удалось получить данные пациента.")
+        return
+
     doctors = await get_doctors_for_patient(patient_id)
 
     if not doctors:
@@ -170,21 +205,11 @@ async def back_to_menu(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("doctor_"))
 async def start_dialogue_with_doctor(callback_query: types.CallbackQuery, state: FSMContext):
     doctor_telegram_id = int(callback_query.data.split("_")[1])
-    patient_id = callback_query.from_user.id
+    patient_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
 
-    # Check patient's subscription validity
-    patient = await get_patient_by_id(patient_id)
-    if not patient:
+    if not patient_id:
         await callback_query.message.edit_text("Ошибка: не удалось получить данные пациента.")
-        return
-
-    registration_date_str = patient['registration_date']
-    registration_date = datetime.strptime(registration_date_str, "%Y-%m-%d %H:%M:%S")
-    days_since_registration = (datetime.now() - registration_date).days
-
-    if days_since_registration > 5:
-        await callback_query.message.edit_text("Ваша подписка истекла. Обратитесь к администратору для продления.")
-        await callback_query.answer()
         return
 
     dialogue = await get_active_dialogue(patient_id, doctor_telegram_id)
@@ -203,49 +228,34 @@ async def start_dialogue_with_doctor(callback_query: types.CallbackQuery, state:
 async def send_message_to_doctor(message: types.Message, state: FSMContext):
     state_data = await state.get_data()
     doctor_id = state_data.get("doctor_telegram_id")
-    patient_id = message.from_user.id
+    patient_telegram_id = message.from_user.id  # Это Telegram ID пациента
 
     if doctor_id is None:
         await message.answer("Ошибка: не удалось получить ID доктора.")
         return
 
-    # Check patient's subscription validity
-    patient = await get_patient_by_id(patient_id)
-    if not patient:
-        await message.answer("Ошибка: не удалось получить данные пациента.")
-        await state.clear()
-        return
-
-    registration_date_str = patient['registration_date']
-    registration_date = datetime.strptime(registration_date_str, "%Y-%m-%d %H:%M:%S")
-    days_since_registration = (datetime.now() - registration_date).days
-
-    if days_since_registration > 5:
-        await message.answer("Ваша подписка истекла. Обратитесь к администратору для продления.")
-        await state.clear()
-        return
-
-    # Check if dialogue is active
+    # Проверяем активный диалог
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
     dialogue = await get_active_dialogue(patient_id, doctor_id)
     if not dialogue or dialogue['state'] == "completed":
         await message.answer("Диалог завершён. Вы не можете отправить сообщение.")
         await state.clear()
         return
 
-    # Send message to doctor
+    # Формируем кнопки с использованием Telegram ID пациента
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ответить", callback_data=f"reply_to_patient_{patient_id}")],
-        [InlineKeyboardButton(text="Завершить диалог", callback_data=f"doctor_end_dialogue_{patient_id}")]
+        [InlineKeyboardButton(text="Ответить", callback_data=f"reply_to_patient_{patient_telegram_id}")],
+        [InlineKeyboardButton(text="Завершить диалог", callback_data=f"doctor_end_dialogue_{patient_telegram_id}")]
     ])
 
     await bot.send_message(
         doctor_id,
-        f"Сообщение от пациента {message.from_user.full_name}: {message.text}",
+        f"Сообщение от пациента: {message.text}",
         reply_markup=markup
     )
     await message.answer("Сообщение отправлено доктору.")
 
-    # Clear state after sending message
+    # Очищаем состояние
     await state.clear()
 
 # Handle doctor's reply to patient
@@ -267,26 +277,28 @@ async def reply_to_doctor(callback_query: types.CallbackQuery, state: FSMContext
 @router.callback_query(F.data.startswith("patient_end_dialogue_"))
 async def end_dialogue_patient(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data.split("_")
-    doctor_id = int(data[3])
-    patient_id = callback_query.from_user.id
+    doctor_telegram_id = int(data[3])
+    patient_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
 
-    # Get active dialogue
-    dialogue = await get_active_dialogue(patient_id, doctor_id)
+    # Получаем активный диалог
+    dialogue = await get_active_dialogue(patient_id, doctor_telegram_id)
 
     if not dialogue:
         await callback_query.message.edit_text("Ошибка: диалог не найден.")
         return
 
-    # Complete the dialogue
-    await complete_dialogue(dialogue['id'])  # dialogue['id'] is 'id'
+    # Завершаем диалог
+    await complete_dialogue(dialogue['id'])
 
-    # Clear FSM state for the patient
+    # Очищаем состояние
     await state.clear()
 
-    # Notify both parties
-    await bot.send_message(doctor_id, "Пациент завершил диалог.")
+    # Уведомляем обе стороны
+    await bot.send_message(doctor_telegram_id, "Пациент завершил диалог.")
     await callback_query.message.edit_text("Вы завершили диалог с доктором.", reply_markup=generate_main_menu())
     await callback_query.answer()
+
 
 # Handler for unexpected messages from the patient
 @router.message(F.text & ~F.text.startswith('/'), StateFilter(None))

@@ -16,7 +16,8 @@ from db import (
     get_active_dialogue,
     complete_dialogue,
     create_invite_code,
-    send_message_to_patient
+    send_message_to_patient,
+    get_patient_id_by_telegram_id
 )
 import qrcode  # For generating QR codes
 import io  # For handling image data in memory
@@ -184,44 +185,49 @@ async def reject_doctor(callback_query: types.CallbackQuery):
 # Handle messages from patients to doctors
 @router.callback_query(F.data.startswith("reply_to_patient_"))
 async def reply_to_patient(callback_query: types.CallbackQuery, state: FSMContext):
-    # Extract patient_id from callback_data
+    # Извлекаем Telegram ID пациента из callback_data
     data = callback_query.data.split("_")
-    patient_id = int(data[3])
+    patient_telegram_id = int(data[3])
 
-    # Save patient_id in state
-    await state.update_data(patient_id=patient_id)
+    # Сохраняем Telegram ID пациента в состоянии
+    await state.update_data(patient_telegram_id=patient_telegram_id)
 
-    # Send message to doctor
+    # Запрашиваем сообщение от доктора
     await callback_query.message.answer("Введите ваше сообщение для пациента:")
     await state.set_state(DialogueState.waiting_for_reply)
     await callback_query.answer()
 
+
 @router.message(StateFilter(DialogueState.waiting_for_reply))
 async def process_doctor_reply(message: types.Message, state: FSMContext):
     state_data = await state.get_data()
-    patient_id = state_data.get("patient_id")
+    patient_telegram_id = state_data.get("patient_telegram_id")
 
-    if patient_id is None:
-        await message.answer("Ошибка: не удалось получить ID пациента.")
+    if patient_telegram_id is None:
+        await message.answer("Ошибка: не удалось получить Telegram ID пациента.")
         return
 
-    # Check if dialogue is active
+    # Получаем patient_id для проверки диалога
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+
+    # Проверяем, что диалог активен
     dialogue = await get_active_dialogue(patient_id, message.from_user.id)
     if not dialogue or dialogue['state'] == "completed":
         await message.answer("Диалог завершён. Вы не можете отправить сообщение.")
         await state.clear()
         return
 
-    # Send message to patient
+    # Формируем кнопки для пациента
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Ответить", callback_data=f"reply_to_doctor_{message.from_user.id}")],
         [InlineKeyboardButton(text="Завершить диалог", callback_data=f"patient_end_dialogue_{message.from_user.id}")]
     ])
 
-    await bot.send_message(patient_id, f"Ответ от доктора: {message.text}", reply_markup=markup)
+    # Отправляем сообщение пациенту, используя его Telegram ID
+    await bot.send_message(patient_telegram_id, f"Ответ от доктора: {message.text}", reply_markup=markup)
     await message.answer("Ваше сообщение отправлено пациенту.")
 
-    # Clear state after sending message
+    # Очищаем состояние
     await state.clear()
 
 # Handler for unexpected messages from the doctor
@@ -233,26 +239,28 @@ async def handle_unexpected_message(message: types.Message):
 @router.callback_query(F.data.startswith("doctor_end_dialogue_"))
 async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data.split("_")
-    patient_id = int(data[3])
-    doctor_id = callback_query.from_user.id
+    patient_telegram_id = int(data[3])
+    doctor_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
 
-    # Get active dialogue
-    dialogue = await get_active_dialogue(patient_id, doctor_id)
+    # Получаем активный диалог
+    dialogue = await get_active_dialogue(patient_id, doctor_telegram_id)
 
     if not dialogue:
         await callback_query.message.answer("Ошибка: диалог не найден.")
         return
 
-    # Complete the dialogue
-    await complete_dialogue(dialogue['id'])  # dialogue['id'] is 'id'
+    # Завершаем диалог
+    await complete_dialogue(dialogue['id'])
 
-    # Clear FSM state for the doctor
+    # Очищаем состояние
     await state.clear()
 
-    # Notify both parties
-    await bot.send_message(patient_id, "Диалог завершён.", reply_markup=generate_main_menu())
+    # Уведомляем обе стороны
+    await bot.send_message(patient_telegram_id, "Доктор завершил диалог.", reply_markup=generate_main_menu())
     await callback_query.message.answer("Вы завершили диалог с пациентом.")
     await callback_query.answer()
+
 
 # Function to generate the main menu for patients (used when ending dialogue)
 def generate_main_menu():
