@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram import F
-from aiogram.types import InputFile
+from aiogram.types import InputFile, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,6 +11,7 @@ from db import (
     add_doctor,
     get_doctor_by_user_id,
     get_doctor_for_link,
+    get_doctor_by_id,
     update_doctor_specialization,
     get_active_dialogue,
     complete_dialogue,
@@ -26,7 +27,6 @@ router = Router()
 # States for doctor registration and admin actions
 class DoctorRegistration(StatesGroup):
     waiting_for_name = State()
-    waiting_for_phone = State()
     confirmation = State()
 
 class AdminActions(StatesGroup):
@@ -47,16 +47,9 @@ async def cmd_register(message: types.Message, state: FSMContext):
 @router.message(StateFilter(DoctorRegistration.waiting_for_name))
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(fio=message.text)
-    await state.set_state(DoctorRegistration.waiting_for_phone)
-    await message.answer("Введите ваш номер телефона:")
-
-# Process doctor's phone number
-@router.message(StateFilter(DoctorRegistration.waiting_for_phone))
-async def process_phone(message: types.Message, state: FSMContext):
-    await state.update_data(phone=message.text)
     user_data = await state.get_data()
     await message.answer(
-        f"Анкета доктора:\nИмя: {user_data['fio']}\nТелефон: {user_data['phone']}\n\nПодтвердите отправку анкеты (да/нет)?"
+        f"Анкета доктора:\nИмя: {user_data['fio']}\n\nПодтвердите отправку анкеты (да/нет)?"
     )
     await state.set_state(DoctorRegistration.confirmation)
 
@@ -67,7 +60,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         if message.text.lower() == 'да':
             user_data = await state.get_data()
             user_id = message.from_user.id
-            doctor_id = await add_doctor(user_data['fio'], user_data['phone'], user_id)
+            doctor_id = await add_doctor(user_data['fio'], user_id)
             await message.answer("Анкета отправлена на рассмотрение.")
             await state.clear()
 
@@ -80,7 +73,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             ])
             await bot.send_message(
                 ADMIN_ID,
-                f"Новая заявка на регистрацию доктора:\nИмя: {user_data['fio']}\nТелефон: {user_data['phone']}",
+                f"Новая заявка на регистрацию доктора:\nИмя: {user_data['fio']}",
                 reply_markup=keyboard
             )
         else:
@@ -109,79 +102,99 @@ async def set_specialization(message: types.Message, state: FSMContext):
         await message.answer("Ошибка: не удалось получить ID доктора.")
         return
 
+    # Update doctor's specialization and set status to "approved"
     await update_doctor_specialization(doctor_id, message.text)
     await message.answer(f"Специализация успешно установлена для доктора: {message.text}.")
 
-    # Provide option to create an invite link
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Создать ссылку", callback_data="create_link")
-        ]
-    ])
+    # Get doctor's data by their ID
+    doctor = await get_doctor_by_id(doctor_id)
 
-    await message.answer("Теперь вы можете создать ссылку для приглашения пациентов.", reply_markup=keyboard)
-    await state.clear()
-
-# Handle creation of unique, one-time use invite link
-from aiogram.types import BufferedInputFile  # Добавьте этот импорт
-
-@router.callback_query(F.data == "create_link")
-async def handle_create_link(callback_query: types.CallbackQuery):
-    doctor_id = await get_doctor_for_link(callback_query.from_user.id)
-    if doctor_id is None:
-        await callback_query.message.answer("Произошла ошибка. Попробуйте позже.")
+    if doctor is None:
+        await message.answer("Ошибка: не удалось получить данные доктора.")
         return
 
-    # Генерация уникального кода и сохранение его в базе данных
+    # Create keyboard with "Create Link" button
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="Создать ссылку")]
+        ],
+        resize_keyboard=True
+    )
+
+    # Send message to the doctor with the "Create Link" button
+    await bot.send_message(
+        doctor['user_id'],  # Accessing by column name
+        "Теперь вы можете создать ссылку для приглашения пациентов.",
+        reply_markup=keyboard
+    )
+
+    await state.clear()
+
+# Handler for creating an invite link when the doctor clicks "Создать ссылку"
+@router.message(F.text == "Создать ссылку")
+async def handle_create_link(message: types.Message):
+    doctor_id = await get_doctor_for_link(message.from_user.id)
+    if doctor_id is None:
+        await message.answer("Произошла ошибка. Попробуйте позже.")
+        return
+
+    # Generate a unique code and save it to the database
     code = await create_invite_code(doctor_id)
 
-    # Генерация уникальной ссылки с использованием кода
+    # Generate a unique link using the code
     bot_info = await bot.get_me()
     invite_link = f"https://t.me/{bot_info.username}?start=invite_{code}"
 
-    # Генерация QR-кода для ссылки
+    # Generate a QR code for the link
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
     qr.add_data(invite_link)
     qr.make(fit=True)
     img = qr.make_image(fill='black', back_color='white')
 
-    # Сохранение изображения QR-кода в памяти
+    # Save the QR code image in memory
     img_byte_arr = io.BytesIO()
     img.save(img_byte_arr, format='PNG')
-    img_byte_arr.seek(0)  # Установить указатель в начало файла
+    img_byte_arr.seek(0)
 
-    # Отправка QR-кода и ссылки доктору
+    # Send the QR code and link to the doctor
     await bot.send_photo(
-        chat_id=callback_query.from_user.id,
+        chat_id=message.from_user.id,
         photo=BufferedInputFile(file=img_byte_arr.read(), filename="qrcode.png"),
         caption=f"Ваша уникальная ссылка для приглашения пациента (одноразовая):\n{invite_link}"
     )
-    await callback_query.answer()
 
-
-# Handle doctor's rejection of registration (if implemented)
+# Handle doctor's rejection of registration
 @router.callback_query(F.data.startswith("reject_"))
 async def reject_doctor(callback_query: types.CallbackQuery):
     doctor_id = int(callback_query.data.split("_")[1])
-    # Implement logic to handle rejection if needed
+
+    # Get doctor's data
+    doctor = await get_doctor_by_id(doctor_id)
+
+    if doctor:
+        # Send notification to the doctor about the rejection
+        await bot.send_message(
+            doctor['user_id'],
+            "К сожалению, ваша заявка на регистрацию была отклонена."
+        )
+
     await callback_query.message.answer("Регистрация доктора отклонена.")
     await callback_query.answer()
 
 # Handle messages from patients to doctors
 @router.callback_query(F.data.startswith("reply_to_patient_"))
 async def reply_to_patient(callback_query: types.CallbackQuery, state: FSMContext):
-    # Извлечение patient_id из callback_data
+    # Extract patient_id from callback_data
     data = callback_query.data.split("_")
     patient_id = int(data[3])
 
-    # Сохранение patient_id в состоянии
+    # Save patient_id in state
     await state.update_data(patient_id=patient_id)
 
-    # Вместо редактирования сообщения, отправляем новое сообщение
+    # Send message to doctor
     await callback_query.message.answer("Введите ваше сообщение для пациента:")
     await state.set_state(DialogueState.waiting_for_reply)
     await callback_query.answer()
-
 
 @router.message(StateFilter(DialogueState.waiting_for_reply))
 async def process_doctor_reply(message: types.Message, state: FSMContext):
@@ -192,40 +205,35 @@ async def process_doctor_reply(message: types.Message, state: FSMContext):
         await message.answer("Ошибка: не удалось получить ID пациента.")
         return
 
-    # Проверяем, активен ли диалог
+    # Check if dialogue is active
     dialogue = await get_active_dialogue(patient_id, message.from_user.id)
-    if not dialogue or dialogue[3] == "completed":  # Проверяем, завершён ли диалог
+    if not dialogue or dialogue['state'] == "completed":
         await message.answer("Диалог завершён. Вы не можете отправить сообщение.")
         await state.clear()
         return
 
-    # Отправляем сообщение пациенту
+    # Send message to patient
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Ответить", callback_data=f"reply_to_doctor_{message.from_user.id}")],
-        [InlineKeyboardButton(text="Завершить диалог", callback_data=f"end_dialogue_{message.from_user.id}")]
+        [InlineKeyboardButton(text="Завершить диалог", callback_data=f"patient_end_dialogue_{message.from_user.id}")]
     ])
 
     await bot.send_message(patient_id, f"Ответ от доктора: {message.text}", reply_markup=markup)
     await message.answer("Ваше сообщение отправлено пациенту.")
 
-    # Выходим из состояния после отправки сообщения
+    # Clear state after sending message
     await state.clear()
 
-from aiogram.filters import Command  # Добавьте этот импорт
-
-# Обработчик для неожиданных сообщений от доктора
-from aiogram import F
-
-# Обработчик для неожиданных сообщений от доктора
+# Handler for unexpected messages from the doctor
 @router.message(F.text & ~F.text.startswith('/'), StateFilter(None))
 async def handle_unexpected_message(message: types.Message):
     await message.answer("Чтобы ответить пациенту, пожалуйста, используйте кнопку 'Ответить' под его сообщением.")
 
 # Handle ending dialogue by the doctor
-@router.callback_query(F.data.startswith("end_dialogue_"))
+@router.callback_query(F.data.startswith("doctor_end_dialogue_"))
 async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMContext):
     data = callback_query.data.split("_")
-    patient_id = int(data[2])
+    patient_id = int(data[3])
     doctor_id = callback_query.from_user.id
 
     # Get active dialogue
@@ -236,14 +244,14 @@ async def end_dialogue_doctor(callback_query: types.CallbackQuery, state: FSMCon
         return
 
     # Complete the dialogue
-    await complete_dialogue(dialogue[0])  # dialogue[0] is 'id'
+    await complete_dialogue(dialogue['id'])  # dialogue['id'] is 'id'
 
     # Clear FSM state for the doctor
     await state.clear()
 
     # Notify both parties
     await bot.send_message(patient_id, "Диалог завершён.", reply_markup=generate_main_menu())
-    await callback_query.message.answer("Диалог завершён.")
+    await callback_query.message.answer("Вы завершили диалог с пациентом.")
     await callback_query.answer()
 
 # Function to generate the main menu for patients (used when ending dialogue)
@@ -254,6 +262,3 @@ def generate_main_menu():
         [InlineKeyboardButton(text="Написать доктору", callback_data="contact_doctor")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# Additional handlers and functions can be added below as needed...
-
