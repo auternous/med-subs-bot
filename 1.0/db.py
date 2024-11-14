@@ -6,6 +6,8 @@ import logging
 from aiogram import Bot
 import uuid  # For generating unique invite codes
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from config import DAYS_OF_SUBS
 
 # Function to get a database connection as an async context manager
 @asynccontextmanager
@@ -65,6 +67,7 @@ async def init_db():
                 patient_id INTEGER,
                 doctor_id INTEGER,
                 registration_date TEXT,
+                expiry_date TEXT,
                 PRIMARY KEY (patient_id, doctor_id),
                 FOREIGN KEY (patient_id) REFERENCES patients(id),
                 FOREIGN KEY (doctor_id) REFERENCES doctors(id)
@@ -172,11 +175,11 @@ async def add_patient_doctor_relation(patient_id, doctor_id, registration_date):
 async def get_doctors_for_patient(patient_id):
     async with get_db_connection() as db:
         async with db.execute('''
-            SELECT doctors.user_id, doctors.fio, doctors.specialization 
-            FROM doctors 
-            JOIN patient_doctor_relations ON doctors.id = patient_doctor_relations.doctor_id 
-            WHERE patient_doctor_relations.patient_id = ?
-        ''', (patient_id,)) as cursor:
+            SELECT doctors.user_id, doctors.fio, doctors.specialization, patient_doctor_relations.expiry_date
+            FROM doctors
+            JOIN patient_doctor_relations ON doctors.id = patient_doctor_relations.doctor_id
+            WHERE patient_doctor_relations.patient_id = ? AND patient_doctor_relations.expiry_date > ?
+        ''', (patient_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))) as cursor:
             return await cursor.fetchall()
 
 # Functions related to dialogues
@@ -239,3 +242,42 @@ async def get_patient_by_telegram_id(telegram_id):
         async with db.execute('SELECT * FROM patients WHERE telegram_id = ?', (telegram_id,)) as cursor:
             patient = await cursor.fetchone()
     return patient  # Returns a Row or None if not found
+
+
+# Функция для добавления новой связи между пациентом и врачом с установкой expiry_date
+async def add_patient_doctor_relation(patient_id, doctor_id, registration_date):
+    # Добавляем 5 дней к дате регистрации для установки срока истечения
+    expiry_date = (datetime.strptime(registration_date, "%Y-%m-%d %H:%M:%S") + timedelta(days=DAYS_OF_SUBS)).strftime("%Y-%m-%d %H:%M:%S")
+    async with get_db_connection() as db:
+        await db.execute(
+            'INSERT OR REPLACE INTO patient_doctor_relations (patient_id, doctor_id, registration_date, expiry_date) VALUES (?, ?, ?, ?)',
+            (patient_id, doctor_id, registration_date, expiry_date)
+        )
+        await db.commit()
+
+# Функция для проверки просроченных связей и их удаления
+async def remove_expired_doctor_relations():
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with get_db_connection() as db:
+        await db.execute(
+            'DELETE FROM patient_doctor_relations WHERE expiry_date < ?',
+            (current_time,)
+        )
+        await db.commit()
+
+# Функция для получения оставшегося времени до окончания прикрепления врача
+async def get_doctor_expiry_time(patient_id, doctor_id):
+    async with get_db_connection() as db:
+        async with db.execute(
+            'SELECT expiry_date FROM patient_doctor_relations WHERE patient_id = ? AND doctor_id = ?', 
+            (patient_id, doctor_id)
+        ) as cursor:
+            result = await cursor.fetchone()
+            return result['expiry_date'] if result else None
+        
+
+async def get_all_doctors():
+    async with get_db_connection() as db:
+        async with db.execute('SELECT fio, specialization, approved FROM doctors') as cursor:
+            doctors = await cursor.fetchall()
+        return doctors  # Список словарей с данными о врачах

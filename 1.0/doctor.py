@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, StateFilter
+from aiogram.filters import CommandStart
 from aiogram.exceptions import TelegramNetworkError
 from config import bot, ADMIN_ID
 from db import (
@@ -36,6 +37,7 @@ class AdminActions(StatesGroup):
 class DialogueState(StatesGroup):
     waiting_for_message = State()
     waiting_for_reply = State()
+
 
 # Command to start doctor registration
 @router.message(Command("reg"))
@@ -103,33 +105,53 @@ async def set_specialization(message: types.Message, state: FSMContext):
         await message.answer("Ошибка: не удалось получить ID доктора.")
         return
 
-    # Update doctor's specialization and set status to "approved"
-    await update_doctor_specialization(doctor_id, message.text)
-    await message.answer(f"Специализация успешно установлена для доктора: {message.text}.")
+    # Сохраняем введённую специализацию во временные данные состояния
+    await state.update_data(specialization=message.text)
 
-    # Get doctor's data by their ID
+    # Запрашиваем подтверждение специализации
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Подтвердить", callback_data="confirm_specialization"),
+            InlineKeyboardButton(text="Отмена", callback_data="cancel_specialization")
+        ]
+    ])
+    await message.answer(f"Вы ввели специализацию: {message.text}. Подтвердите или отмените ввод.", reply_markup=keyboard)
+
+
+# Обработчик подтверждения специализации
+@router.callback_query(lambda c: c.data == "confirm_specialization")
+async def confirm_specialization(callback_query: types.CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    doctor_id = state_data.get("doctor_id")
+    specialization = state_data.get("specialization")
+
+    # Устанавливаем специализацию и статус "approved" для доктора
+    await update_doctor_specialization(doctor_id, specialization)
+    await callback_query.message.edit_text(f"Специализация успешно установлена для доктора: {specialization}.")
+    
+    # Получаем данные врача и уведомляем его
     doctor = await get_doctor_by_id(doctor_id)
-
-    if doctor is None:
-        await message.answer("Ошибка: не удалось получить данные доктора.")
-        return
-
-    # Create keyboard with "Create Link" button
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="Создать ссылку")]
-        ],
-        resize_keyboard=True
-    )
-
-    # Send message to the doctor with the "Create Link" button
-    await bot.send_message(
-        doctor['user_id'],  # Accessing by column name
-        "Теперь вы можете создать ссылку для приглашения пациентов.",
-        reply_markup=keyboard
-    )
+    if doctor:
+        keyboard = types.ReplyKeyboardMarkup(
+            keyboard=[[types.KeyboardButton(text="Создать ссылку")]],
+            resize_keyboard=True
+        )
+        await bot.send_message(
+            doctor['user_id'],
+            "Теперь вы можете создать ссылку для приглашения пациентов.",
+            reply_markup=keyboard
+        )
 
     await state.clear()
+    await callback_query.answer()
+
+
+# Обработчик отмены специализации
+@router.callback_query(lambda c: c.data == "cancel_specialization")
+async def cancel_specialization(callback_query: types.CallbackQuery, state: FSMContext):
+    await callback_query.message.edit_text("Отмена ввода специализации. Пожалуйста, введите специализацию снова.")
+    await state.set_state(AdminActions.waiting_for_specialization)  # Возвращаемся к этапу ввода специализации
+    await callback_query.answer()
 
 # Handler for creating an invite link when the doctor clicks "Создать ссылку"
 @router.message(F.text == "Создать ссылку")

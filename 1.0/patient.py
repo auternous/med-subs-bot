@@ -3,6 +3,7 @@
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
+from datetime import datetime, timedelta
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db import (
@@ -17,7 +18,8 @@ from db import (
     get_active_dialogue,
     complete_dialogue,
     get_invite_code,
-    mark_invite_code_as_used
+    mark_invite_code_as_used,
+    get_doctor_expiry_time
 )
 from datetime import datetime
 from config import bot
@@ -109,16 +111,16 @@ async def process_patient_confirmation(message: types.Message, state: FSMContext
         doctor_id = user_data['doctor_id']
         patient_telegram_id = message.from_user.id
 
-        # Add the patient to the patients table
+        # Добавляем пациента в таблицу patients
         await add_patient(
             name=user_data['name'],
             telegram_id=patient_telegram_id,
             registration_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
-        # Get patient ID
+        # Получаем patient_id для связи
         patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
 
-        # Associate patient with the doctor
+        # Устанавливаем связь между пациентом и врачом
         await add_patient_doctor_relation(
             patient_id=patient_id,
             doctor_id=doctor_id,
@@ -128,8 +130,11 @@ async def process_patient_confirmation(message: types.Message, state: FSMContext
         await message.answer("Регистрация завершена.", reply_markup=generate_main_menu())
         await state.clear()
     else:
-        await message.answer("Регистрация отменена.")
-        await state.clear()
+        # Если пациент ответил "нет", просим его снова ввести данные
+        await message.answer("Пожалуйста, введите ваше ФИО снова для регистрации.")
+        await state.set_state(PatientRegistration.waiting_for_name)
+
+
 
 @router.callback_query(lambda c: c.data == "profile")
 async def show_profile(callback_query: types.CallbackQuery):
@@ -140,30 +145,23 @@ async def show_profile(callback_query: types.CallbackQuery):
 
     profile_info = f"Имя: {patient['name']}\n"
 
-    # Optionally, list associated doctors
+    # Список врачей пациента с временем до окончания прикрепления
     patient_id = patient['id']
     doctors = await get_doctors_for_patient(patient_id)
     if doctors:
-        doctor_list = "\n".join([f"{doc['fio']} ({doc['specialization']})" for doc in doctors])
+        doctor_list = ""
+        for doctor in doctors:
+            specialization = doctor['specialization'] or "Специализация не указана"
+            expiry_date = doctor['expiry_date']
+            time_remaining = get_time_remaining(expiry_date) if expiry_date else "неизвестно"
+            doctor_list += f"{doctor['fio']} ({specialization}) - осталось: {time_remaining}\n"
         profile_info += f"Ваши врачи:\n{doctor_list}"
     else:
         profile_info += "У вас нет закрепленных врачей."
 
-    # Получаем текущий текст сообщения и клавиатуру
-    current_text = callback_query.message.text
-    current_markup = callback_query.message.reply_markup
-
-    # Создаем новую клавиатуру
-    new_markup = generate_main_menu()
-
-    # Проверяем, изменились ли текст или клавиатура
-    if profile_info != current_text or new_markup != current_markup:
-        await callback_query.message.edit_text(profile_info, reply_markup=new_markup)
-    else:
-        # Текст и клавиатура не изменились, можно пропустить вызов edit_text()
-        pass
-
+    await callback_query.message.edit_text(profile_info, reply_markup=generate_main_menu())
     await callback_query.answer()
+
 
 
 @router.callback_query(lambda c: c.data == "schedule")
@@ -217,10 +215,40 @@ async def start_dialogue_with_doctor(callback_query: types.CallbackQuery, state:
         await callback_query.message.edit_text("У вас уже есть активный диалог с этим доктором.")
     else:
         await start_dialogue(patient_id, doctor_telegram_id)
-        # Save doctor_telegram_id and patient_id in state
+        
+        # Сохраняем данные в состоянии
         await state.update_data(doctor_telegram_id=doctor_telegram_id, patient_id=patient_id)
         await state.set_state(DialogueState.waiting_for_message)
-        await callback_query.message.edit_text("Напишите ваше сообщение для доктора.")
+
+        # Кнопка для отмены
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="cancel_dialogue")]
+        ])
+        
+        await callback_query.message.edit_text("Напишите ваше сообщение для доктора или нажмите 'Отмена', если передумали.", reply_markup=markup)
+    await callback_query.answer()
+
+from db import complete_dialogue  # Убедитесь, что функция complete_dialogue импортирована
+
+# Обработчик для отмены диалога с врачом
+@router.callback_query(lambda c: c.data == "cancel_dialogue")
+async def cancel_dialogue(callback_query: types.CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    doctor_telegram_id = state_data.get("doctor_telegram_id")
+    patient_telegram_id = callback_query.from_user.id
+
+    # Получаем patient_id для проверки диалога
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+
+    # Проверяем, есть ли активный диалог с этим врачом
+    dialogue = await get_active_dialogue(patient_id, doctor_telegram_id)
+    if dialogue:
+        # Завершаем активный диалог, чтобы он не считался активным
+        await complete_dialogue(dialogue['id'])
+
+    # Очищаем состояние и возвращаемся в главное меню
+    await state.clear()
+    await callback_query.message.edit_text("Вы отменили диалог. Возвращаемся в главное меню.", reply_markup=generate_main_menu())
     await callback_query.answer()
 
 # Send message to doctor
@@ -304,3 +332,11 @@ async def end_dialogue_patient(callback_query: types.CallbackQuery, state: FSMCo
 @router.message(F.text & ~F.text.startswith('/'), StateFilter(None))
 async def handle_unexpected_message(message: types.Message):
     await message.answer("Чтобы написать доктору, пожалуйста, используйте кнопку 'Написать доктору' в меню.")
+
+
+def get_time_remaining(expiry_date):
+    expiry = datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S")
+    time_remaining = expiry - datetime.now()
+    days = time_remaining.days
+    hours, remainder = divmod(time_remaining.seconds, 3600)
+    return f"{days} дней, {hours} часов"
