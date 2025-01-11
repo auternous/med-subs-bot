@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
-API_TOKEN = '7232213621:AAHVeQRw9zxE1UVfC5qolMVy0gt3qmJkXX8'
+API_TOKEN = '7339481201:AAGeLezO4I94FrhA2FN3E6K1WLwqIFfZS8k'
 ADMIN_ID = '370028521'
 DAYS_OF_SUBS = 3
 

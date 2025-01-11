@@ -292,3 +292,45 @@ def generate_main_menu():
         [InlineKeyboardButton(text="Написать доктору", callback_data="contact_doctor")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(F.text == "Мои чаты")
+async def show_chats(message: types.Message):
+    doctor_id = await get_doctor_by_user_id(message.from_user.id)
+    if not doctor_id:
+        await message.answer("Вы не зарегистрированы как врач.")
+        return
+
+    dialogues = await get_active_dialogue(doctor_id=doctor_id['id'])
+    if not dialogues:
+        await message.answer("У вас нет активных чатов.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=f"Чат с {dialogue['patient_name']}", callback_data=f"open_chat_{dialogue['id']}")]
+        for dialogue in dialogues
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("Ваши активные чаты:", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("open_chat_"))
+async def open_chat(callback_query: types.CallbackQuery, state: FSMContext):
+    dialogue_id = int(callback_query.data.split("_")[2])
+    await state.update_data(current_dialogue_id=dialogue_id)
+    await callback_query.message.edit_text(f"Вы в чате. Можете писать сообщения.")
+    await callback_query.answer()
+
+
+async def send_notification_to_doctor(doctor_id, patient_name, message, dialogue_id):
+    buttons = [
+        [InlineKeyboardButton(text="Перейти в чат", callback_data=f"open_chat_{dialogue_id}")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await bot.send_message(doctor_id, f"Новое сообщение от {patient_name}: {message}", reply_markup=markup)
+
+
+@router.message(F.text == "Выйти в список чатов")
+async def back_to_chat_list(message: types.Message, state: FSMContext):
+    await state.clear()
+    await show_chats(message)

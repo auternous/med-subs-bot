@@ -340,3 +340,50 @@ def get_time_remaining(expiry_date):
     days = time_remaining.days
     hours, remainder = divmod(time_remaining.seconds, 3600)
     return f"{days} дней, {hours} часов"
+
+
+@router.callback_query(lambda c: c.data == "contact_doctor")
+async def contact_doctor(callback_query: types.CallbackQuery):
+    patient_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+    if not patient_id:
+        await callback_query.message.edit_text("Ошибка: не удалось получить данные пациента.")
+        return
+
+    doctors = await get_doctors_for_patient(patient_id)
+
+    if not doctors:
+        await callback_query.message.edit_text("У вас нет закрепленных врачей.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=f"{doctor['fio']} ({doctor['specialization']})", callback_data=f"chat_with_{doctor['user_id']}")]
+        for doctor in doctors
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="back_to_menu")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback_query.message.edit_text("Выберите доктора для связи:", reply_markup=markup)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("chat_with_"))
+async def start_chat_with_doctor(callback_query: types.CallbackQuery, state: FSMContext):
+    doctor_telegram_id = int(callback_query.data.split("_")[2])
+    patient_telegram_id = callback_query.from_user.id
+    patient_id = await get_patient_id_by_telegram_id(patient_telegram_id)
+
+    if not patient_id:
+        await callback_query.message.edit_text("Ошибка: не удалось получить данные пациента.")
+        return
+
+    # Проверяем активный диалог
+    dialogue = await get_active_dialogue(patient_id, doctor_telegram_id)
+    if not dialogue:
+        await start_dialogue(patient_id, doctor_telegram_id)
+
+    # Сохраняем данные диалога
+    await state.update_data(current_doctor_id=doctor_telegram_id)
+    await callback_query.message.edit_text("Вы в чате с доктором. Напишите сообщение.")
+    await callback_query.answer()
+

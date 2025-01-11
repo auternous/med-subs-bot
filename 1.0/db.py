@@ -281,3 +281,46 @@ async def get_all_doctors():
         async with db.execute('SELECT fio, specialization, approved FROM doctors') as cursor:
             doctors = await cursor.fetchall()
         return doctors  # Список словарей с данными о врачах
+
+# Function to get all active dialogues for a doctor
+async def get_active_dialogues_for_doctor(doctor_id):
+    async with get_db_connection() as db:
+        async with db.execute('''
+            SELECT d.id AS dialogue_id, p.name AS patient_name, p.telegram_id AS patient_telegram_id
+            FROM dialogues d
+            JOIN patients p ON d.patient_id = p.id
+            WHERE d.doctor_id = ? AND d.state = "active"
+        ''', (doctor_id,)) as cursor:
+            dialogues = await cursor.fetchall()
+    return dialogues  # Returns a list of Row objects
+
+# Function to get all active dialogues for a patient
+async def get_active_dialogues_for_patient(patient_id):
+    async with get_db_connection() as db:
+        async with db.execute('''
+            SELECT d.id AS dialogue_id, doctors.fio AS doctor_name, doctors.user_id AS doctor_telegram_id
+            FROM dialogues d
+            JOIN doctors ON d.doctor_id = doctors.id
+            WHERE d.patient_id = ? AND d.state = "active"
+        ''', (patient_id,)) as cursor:
+            dialogues = await cursor.fetchall()
+    return dialogues  # Returns a list of Row objects
+
+# Function to mark a dialogue as active or completed
+async def update_dialogue_state(dialogue_id, new_state):
+    async with get_db_connection() as db:
+        await db.execute(
+            'UPDATE dialogues SET state = ? WHERE id = ?',
+            (new_state, dialogue_id)
+        )
+        await db.commit()
+
+# Function to check if a specific dialogue exists between a doctor and patient
+async def check_dialogue_exists(patient_id, doctor_id):
+    async with get_db_connection() as db:
+        async with db.execute('''
+            SELECT * FROM dialogues
+            WHERE patient_id = ? AND doctor_id = ? AND state = "active"
+        ''', (patient_id, doctor_id)) as cursor:
+            dialogue = await cursor.fetchone()
+    return dialogue  # Returns a Row object or None
